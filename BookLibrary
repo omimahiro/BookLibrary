@@ -1,0 +1,205 @@
+// แอปจัดการหนังสือส่วนตัวแบบชั้นหนังสือ พร้อมเลือกปกเอง + ISBN + ธีมไม้แบบภาพจริง
+import React, { useState, useEffect } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from "firebase/firestore";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { DndContext, closestCenter } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+
+const firebaseConfig = {
+  apiKey: "YOUR_FIREBASE_API_KEY",
+  authDomain: "YOUR_FIREBASE_AUTH_DOMAIN",
+  projectId: "YOUR_FIREBASE_PROJECT_ID",
+  storageBucket: "YOUR_FIREBASE_STORAGE_BUCKET",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+const storage = getStorage(app);
+
+function SortableBook({ book }) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: book.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    backgroundImage: `url(${book.cover})`,
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+    height: "160px",
+    width: "100px",
+    borderRadius: "6px",
+    boxShadow: "0 4px 6px rgba(0,0,0,0.1)",
+    cursor: "grab",
+    position: "relative"
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-xs text-center py-1 rounded-b-md opacity-0 hover:opacity-100 transition">
+        {book.title}
+      </div>
+    </div>
+  );
+}
+
+export default function BookshelfApp() {
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [books, setBooks] = useState([]);
+  const [theme, setTheme] = useState("wood1");
+  const [categories, setCategories] = useState(["มังงะ", "นิยาย", "eBook"]);
+  const [newCategory, setNewCategory] = useState("");
+  const [isbnInput, setIsbnInput] = useState("");
+  const [customCover, setCustomCover] = useState(null);
+  const [customTitle, setCustomTitle] = useState("");
+  const [customCategory, setCustomCategory] = useState("นิยาย");
+
+  useEffect(() => {
+    if (user) {
+      const unsub = onSnapshot(collection(db, "books"), snapshot => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(b => b.userEmail === user.email);
+        setBooks(data);
+      });
+      return () => unsub();
+    }
+  }, [user]);
+
+  const handleLogin = async () => {
+    const res = await signInWithEmailAndPassword(auth, email, password);
+    setUser(res.user);
+  };
+
+  const handleRegister = async () => {
+    const res = await createUserWithEmailAndPassword(auth, email, password);
+    setUser(res.user);
+  };
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    if (active.id !== over.id) {
+      const oldIndex = books.findIndex(b => b.id === active.id);
+      const newIndex = books.findIndex(b => b.id === over.id);
+      setBooks(prev => arrayMove(prev, oldIndex, newIndex));
+    }
+  };
+
+  const handleAddCategory = () => {
+    if (newCategory && !categories.includes(newCategory)) {
+      setCategories([...categories, newCategory]);
+      setNewCategory("");
+    }
+  };
+
+  const handleAddISBN = async () => {
+    if (!isbnInput) return;
+    try {
+      const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbnInput}`);
+      const data = await res.json();
+      const item = data.items?.[0]?.volumeInfo;
+      if (item) {
+        await addDoc(collection(db, "books"), {
+          title: item.title,
+          cover: item.imageLinks?.thumbnail || "",
+          category: "นิยาย",
+          userEmail: user.email
+        });
+        setIsbnInput("");
+      }
+    } catch (err) {
+      console.error("ไม่สามารถเพิ่มหนังสือได้", err);
+    }
+  };
+
+  const handleAddCustomBook = async () => {
+    if (!customTitle || !customCover) return;
+    const fileRef = ref(storage, `covers/${Date.now()}_${customCover.name}`);
+    await uploadBytes(fileRef, customCover);
+    const coverUrl = await getDownloadURL(fileRef);
+
+    await addDoc(collection(db, "books"), {
+      title: customTitle,
+      cover: coverUrl,
+      category: customCategory,
+      userEmail: user.email
+    });
+
+    setCustomTitle("");
+    setCustomCover(null);
+  };
+
+  return (
+    <div className="p-4 min-h-screen" style={{ background: "#f2e6d9" }}>
+      {!user ? (
+        <div className="max-w-md mx-auto">
+          <h2 className="text-xl font-bold mb-2">เข้าสู่ระบบ / สมัครสมาชิก</h2>
+          <Input placeholder="อีเมล" value={email} onChange={e => setEmail(e.target.value)} className="mb-2" />
+          <Input type="password" placeholder="รหัสผ่าน" value={password} onChange={e => setPassword(e.target.value)} className="mb-2" />
+          <Button onClick={handleLogin} className="mr-2">เข้าสู่ระบบ</Button>
+          <Button onClick={handleRegister} variant="outline">สมัครสมาชิก</Button>
+        </div>
+      ) : (
+        <div>
+          <h2 className="text-2xl font-bold mb-4">ชั้นหนังสือของฉัน</h2>
+
+          <div className="mb-4">
+            <label className="mr-2 font-semibold">ธีมชั้นวาง:</label>
+            <select value={theme} onChange={e => setTheme(e.target.value)} className="border rounded p-1">
+              <option value="wood1">ไม้คลาสสิก</option>
+              <option value="wood2">ไม้เข้ม</option>
+              <option value="wood3">ไม้อ่อน</option>
+              <option value="wood4">ลายไม้สีดำ</option>
+              <option value="wood5">ไม้ภาพจริง</option>
+            </select>
+          </div>
+
+          <div className="mb-4">
+            <label className="mr-2 font-semibold">เพิ่มหมวดหมู่:</label>
+            <Input value={newCategory} onChange={e => setNewCategory(e.target.value)} className="inline-block w-40 mr-2" />
+            <Button onClick={handleAddCategory}>เพิ่ม</Button>
+          </div>
+
+          <div className="mb-6">
+            <label className="mr-2 font-semibold">เพิ่มหนังสือด้วย ISBN/Barcode:</label>
+            <Input value={isbnInput} onChange={e => setIsbnInput(e.target.value)} className="inline-block w-48 mr-2" />
+            <Button onClick={handleAddISBN}>เพิ่ม</Button>
+          </div>
+
+          <div className="mb-6">
+            <h3 className="font-semibold mb-2">เพิ่มหนังสือเอง:</h3>
+            <Input placeholder="ชื่อหนังสือ" value={customTitle} onChange={e => setCustomTitle(e.target.value)} className="mb-2" />
+            <select value={customCategory} onChange={e => setCustomCategory(e.target.value)} className="mb-2">
+              {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+            </select>
+            <Input type="file" onChange={e => setCustomCover(e.target.files[0])} className="mb-2" />
+            <Button onClick={handleAddCustomBook}>เพิ่มหนังสือจากเครื่อง</Button>
+          </div>
+
+          {categories.map(cat => (
+            <div key={cat} className="mb-6">
+              <h3 className="text-lg font-semibold mb-2">{cat}</h3>
+              <div className={`bg-[url('/${theme}.jpg')] bg-cover rounded-xl p-6 shadow-inner`}>
+                <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                  <SortableContext items={books.filter(b => b.category === cat).map(b => b.id)} strategy={verticalListSortingStrategy}>
+                    <div className="flex flex-wrap gap-4">
+                      {books.filter(b => b.category === cat).map((book, index) => (
+                        <SortableBook key={book.id} book={book} index={index} />
+                      ))}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
